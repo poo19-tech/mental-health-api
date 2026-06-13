@@ -1,26 +1,10 @@
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import torch
 import re
 
-# ── App ───────────────────────────────────────────────
 app = FastAPI()
 
-# ── Load Model ────────────────────────────────────────
-print("Loading model...")
-MODEL_PATH = "bert-base-uncased"
-tokenizer  = AutoTokenizer.from_pretrained(MODEL_PATH)
-model      = AutoModelForSequenceClassification.from_pretrained(
-    MODEL_PATH,
-    num_labels              = 2,
-    ignore_mismatched_sizes = True
-)
-model.eval()
-print("✅ Model ready!")
-
-# ── Word Lists ────────────────────────────────────────
 PAST_TENSE_WORDS = {
     "was","were","had","did","went","said","got","made",
     "came","saw","knew","thought","told","felt","left",
@@ -50,11 +34,9 @@ HOPELESSNESS_WORDS = {
     "burden","unwanted","unloved","doomed","trapped","stuck"
 }
 
-# ── Request Body ──────────────────────────────────────
 class TextInput(BaseModel):
     text: str
 
-# ── analyze_text Function ─────────────────────────────
 def analyze_text(text: str) -> dict:
     if not isinstance(text, str) or text.strip() == "":
         return {
@@ -64,22 +46,6 @@ def analyze_text(text: str) -> dict:
             "hopelessness_score"    : 0.0,
             "detected_patterns"     : []
         }
-
-    words    = text.split()[:200]
-    text_cut = " ".join(words)
-
-    inputs = tokenizer(
-        text_cut,
-        return_tensors = "pt",
-        truncation     = True,
-        max_length     = 128,
-        padding        = "max_length"
-    )
-
-    with torch.no_grad():
-        outputs = model(**inputs)
-        probs   = torch.softmax(outputs.logits, dim=1)
-        depression_prob = round(probs[0][1].item(), 4)
 
     tokens = re.findall(r"[a-z']+", text.lower())
     n      = max(len(tokens), 1)
@@ -95,6 +61,10 @@ def analyze_text(text: str) -> dict:
     future_ratio = round(future_count/ n, 4)
     hop_score    = round(hop_count   / n, 4)
 
+    # Simple depression probability from LIWC score
+    score = (hop_score * 3) + (neg_count/n * 2) + (fp_count/n * 1)
+    depression_prob = round(min(score / 0.5, 1.0), 4)
+
     patterns = []
     if past_ratio > 0.15:
         patterns.append("high past tense — rumination detected")
@@ -107,7 +77,7 @@ def analyze_text(text: str) -> dict:
     if fp_count / n > 0.15:
         patterns.append("high self focus — first person overuse")
     if depression_prob > 0.7:
-        patterns.append("high depression probability by BERT")
+        patterns.append("high depression probability detected")
 
     return {
         "depression_probability": depression_prob,
@@ -117,12 +87,10 @@ def analyze_text(text: str) -> dict:
         "detected_patterns"     : patterns
     }
 
-# ── API Routes ────────────────────────────────────────
 @app.get("/")
 def root():
     return RedirectResponse(url="/docs")
 
 @app.post("/analyze")
 def analyze(input: TextInput):
-    result = analyze_text(input.text)
-    return result
+    return analyze_text(input.text)
